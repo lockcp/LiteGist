@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <meta name="color-scheme" content="dark light">
+  <meta name="view-transition" content="same-origin">
+  <title>LiteGist</title>
+  <link rel="stylesheet" href="/admin/styles.css">
+  <link rel="manifest" href="/admin/manifest.json">
+  <meta name="theme-color" content="#0b1020">
+  <link rel="icon" type="image/svg+xml" href="/admin/icon.svg">
+  <link rel="apple-touch-icon" sizes="180x180" href="/admin/icon-180.png">
+  <script>
+    (function() {
+      const saved = sessionStorage.getItem('theme');
+      if (saved) document.documentElement.setAttribute('data-theme', saved);
+      else if (window.matchMedia('(prefers-color-scheme: light)').matches) {
+        document.documentElement.setAttribute('data-theme', 'light');
+      }
+    })();
+  </script>
+  
+  <!-- Markdown & Highlight -->
+  <script defer src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github-dark.min.css" id="hljs-theme">
+
+  <!-- CodeMirror -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/codemirror.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/theme/darcula.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/theme/idea.min.css">
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/codemirror.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/javascript/javascript.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/markdown/markdown.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/xml/xml.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/css/css.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/htmlmixed/htmlmixed.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/python/python.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/bash/bash.min.js"></script>
+  <!-- CodeMirror Search Addons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/addon/dialog/dialog.min.css">
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/addon/dialog/dialog.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/addon/search/searchcursor.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/addon/search/search.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/addon/search/jump-to-line.min.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="header-nav">
+      <div class="brand">
+        <a href="https://github.com/lockcp/LiteGist" target="_blank" class="brand-title">LiteGist</a>
+      </div>
+      <div class="header-actions">
+        <button id="btn-open-manage" class="btn icon-btn" title="Manage Links">🔗</button>
+        <button id="btn-open-gists" class="btn icon-btn" title="Multi-file Gists">🗂️</button>
+        <button id="btn-open-webdav" class="btn icon-btn" title="WebDAV Backup">☁️</button>
+        <button id="btn-open-export" class="btn icon-btn" title="Export / Import">📦</button>
+        <button id="btn-open-settings" class="btn icon-btn" title="Admin Settings">⚙️</button>
+        <button id="theme-toggle" class="btn icon-btn" title="Toggle Theme">🌓</button>
+        <a href="/admin/logout" class="btn icon-btn" title="Logout" style="text-decoration: none;">🚪</a>
+      </div>
+    </header>
+
+    <main class="main-fullscreen">
+      <div class="editor-container">
+        <div class="editor-workspace" id="workspace">
+          <textarea id="share-content" class="editor-textarea" placeholder="Paste your text here..."></textarea>
+          <div id="md-preview" class="editor-preview markdown-body hidden"></div>
+          <button id="editor-fab" class="editor-fab hidden" title="Toggle">🔍</button>
+        </div>
+        
+        <div class="editor-toolbar">
+          <div class="toolbar-field">
+            <label>Custom Slug (Opt)</label>
+            <input type="text" id="share-slug" placeholder="e.g. my-text" autocomplete="off" data-1p-ignore data-lpignore="true">
+          </div>
+          <div class="toolbar-field">
+            <label>Password (Opt)</label>
+            <input type="password" id="share-pass" placeholder="Leave blank for public" autocomplete="off" data-1p-ignore data-lpignore="true">
+          </div>
+          <div class="toolbar-field">
+            <label>Type</label>
+            <select id="share-type">
+              <option value="txt">Plain Text</option>
+              <option value="markdown" selected>Markdown</option>
+              <option value="code">Code</option>
+              <option value="sub">Subscription</option>
+            </select>
+          </div>
+          <div class="toolbar-field">
+            <label>Expires (Days)</label>
+            <input type="number" id="share-expiry" placeholder="Never" autocomplete="off" data-1p-ignore data-lpignore="true">
+          </div>
+          <div class="toolbar-field" style="flex: 1 1 100%; margin-top: 8px;">
+            <button id="btn-confirm-generate" class="btn primary" style="width: 100%; padding: 14px; font-size: 16px;">Generate Link</button>
+          </div>
+        </div>
+        
+        <div id="generate-result" class="result-box hidden"></div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Manage Links Modal -->
+  <div id="manage-modal" class="modal-overlay hidden">
+    <div class="modal large">
+      <div class="card-header">
+        <h2 style="margin:0">Manage Links</h2>
+        <button id="btn-close-manage" class="btn secondary">Close</button>
+      </div>
+      <div style="flex:1; overflow-y:auto; margin-top:16px;">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:32px;"><input type="checkbox" id="check-all-shares" style="cursor:pointer;width:16px;height:16px;accent-color:var(--blue);"></th>
+              <th>Slug</th>
+              <th>Type</th>
+              <th>Created</th>
+              <th>Expires</th>
+              <th>Auth</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="shares-tbody">
+            <!-- Rendered via JS -->
+          </tbody>
+        </table>
+      </div>
+      <div id="batch-bar" class="batch-bar hidden">
+        <span id="batch-count">0 selected</span>
+        <button id="btn-batch-delete" class="btn red-btn" style="padding:6px 14px;font-size:13px;">Delete Selected</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Gists Manage Modal -->
+  <div id="gists-modal" class="modal-overlay hidden">
+    <div class="modal large">
+      <div class="card-header">
+        <h2 style="margin:0">Multi-file Gists</h2>
+        <div style="display:flex; gap:8px;">
+          <button id="btn-new-gist" class="btn primary">New Gist</button>
+          <button id="btn-close-gists" class="btn secondary">Close</button>
+        </div>
+      </div>
+      <div style="flex:1; overflow-y:auto; margin-top:16px;">
+        <table>
+          <thead>
+            <tr>
+              <th>Description</th>
+              <th>Files</th>
+              <th>Updated</th>
+              <th>Auth</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="gists-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Gist Editor Modal -->
+  <div id="gist-editor-modal" class="modal-overlay hidden">
+    <div class="modal large gist-modal">
+      <div class="card-header">
+        <h2 id="gist-editor-title" style="margin:0">Create Gist</h2>
+        <button id="btn-close-gist-editor" class="btn secondary">Close</button>
+      </div>
+      <div class="gist-editor-grid">
+        <div class="gist-meta-panel">
+          <div class="text-share-field">
+            <label>Description</label>
+            <input type="text" id="gist-description" placeholder="e.g. Gist" autocomplete="off" data-1p-ignore data-lpignore="true">
+          </div>
+          <div class="text-share-field">
+            <label>Visibility</label>
+            <select id="gist-public">
+              <option value="false" selected>Private</option>
+              <option value="true">Public</option>
+            </select>
+          </div>
+          <div class="text-share-field">
+            <button id="btn-add-gist-file" class="btn secondary full">Add File</button>
+          </div>
+          <div id="gist-editor-status" class="result-box hidden"></div>
+        </div>
+        <div class="gist-files-panel">
+          <div id="gist-files-list" class="gist-files-list"></div>
+        </div>
+      </div>
+      <div class="text-share-actions" style="margin-top:16px;">
+        <button id="btn-save-gist" class="btn primary" style="flex:1">Save Gist</button>
+      </div>
+      <div id="gist-generate-result" class="result-box hidden"></div>
+    </div>
+  </div>
+
+  <!-- Gist file navigation floating buttons -->
+  <div id="gist-file-nav" class="gist-file-nav hidden">
+    <button class="gist-file-nav-btn" id="gist-nav-up" title="上一个文件">▲</button>
+    <button class="gist-file-nav-btn" id="gist-nav-down" title="下一个文件">▼</button>
+  </div>
+
+  <!-- Edit Modal -->
+  <div id="edit-modal" class="modal-overlay hidden">
+    <div class="modal large edit-share-modal">
+      <div class="card-header">
+        <h2 style="margin:0">Edit Share</h2>
+        <button id="btn-close-edit" class="btn secondary">Close</button>
+      </div>
+      <div class="edit-share-layout">
+        <div class="edit-share-meta">
+          <div class="text-share-field">
+            <label>Share Slug (URL ID)</label>
+            <input type="text" id="edit-slug" autocomplete="off" data-1p-ignore data-lpignore="true">
+          </div>
+          <div class="text-share-field">
+            <label>Type</label>
+            <select id="edit-type">
+              <option value="txt">Plain Text</option>
+              <option value="markdown">Markdown</option>
+              <option value="code">Code</option>
+              <option value="sub">Subscription</option>
+            </select>
+          </div>
+          <div class="text-share-field">
+            <label>New Password (Optional)</label>
+            <input type="password" id="edit-pass" placeholder="Leave blank to remove password" autocomplete="off" data-1p-ignore data-lpignore="true">
+          </div>
+          <div class="text-share-field">
+            <label>New Expiry (ISO Date)</label>
+            <input type="text" id="edit-expiry" placeholder="YYYY-MM-DD" autocomplete="off" data-1p-ignore data-lpignore="true">
+          </div>
+        </div>
+        <div class="edit-share-editor-shell">
+          <div class="editor-workspace edit-workspace">
+            <textarea id="edit-content" class="editor-textarea" placeholder="Share content..."></textarea>
+            <div id="edit-md-preview" class="editor-preview markdown-body hidden"></div>
+            <button id="edit-editor-fab" class="editor-fab hidden" title="Toggle">🔍</button>
+          </div>
+        </div>
+      </div>
+      <div class="text-share-actions">
+        <button id="btn-confirm-edit" class="btn primary" style="flex:1">Save Changes</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- WebDAV Modal -->
+  <div id="webdav-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <h2 style="margin-top:0">☁️ WebDAV Backup</h2>
+      <div class="text-share-field">
+        <label>WebDAV URL</label>
+        <input type="url" id="webdav-url" placeholder="https://dav.example.com/path/" autocomplete="off" data-1p-ignore data-lpignore="true">
+      </div>
+      <div class="text-share-field">
+        <label>Username</label>
+        <input type="text" id="webdav-user" placeholder="WebDAV username" autocomplete="off" data-1p-ignore data-lpignore="true">
+      </div>
+      <div class="text-share-field">
+        <label>Password</label>
+        <input type="text" id="webdav-pass" placeholder="WebDAV password" autocomplete="off" data-1p-ignore data-lpignore="true">
+      </div>
+      <div class="text-share-field">
+        <label>Encryption Password</label>
+        <input type="text" id="webdav-encrypt-key" placeholder="AES-256 encryption key" autocomplete="off" data-1p-ignore data-lpignore="true">
+      </div>
+      <div class="text-share-field">
+        <label>Auto Backup Interval</label>
+        <select id="webdav-auto-interval">
+          <option value="0">Disabled</option>
+          <option value="1">Every 1 hour</option>
+          <option value="6">Every 6 hours</option>
+          <option value="12">Every 12 hours</option>
+          <option value="24">Every 24 hours</option>
+        </select>
+      </div>
+      <div id="webdav-auto-status" style="font-size:12px;color:var(--muted);margin-bottom:4px;min-height:18px;"></div>
+      <div id="webdav-status" class="result-box hidden"></div>
+      <div class="text-share-actions" style="flex-wrap:wrap;">
+        <button id="btn-close-webdav" class="btn secondary" style="flex:1">Close</button>
+        <button id="btn-save-webdav" class="btn primary" style="flex:1">Save Settings</button>
+      </div>
+      <div class="text-share-actions" style="margin-top:10px;">
+        <button id="btn-webdav-backup" class="btn primary" style="flex:1;">⬆ Backup</button>
+        <button id="btn-webdav-restore" class="btn primary" style="flex:1;">⬇ Restore</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Export / Import Modal -->
+  <div id="export-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <h2 style="margin-top:0">📦 Export / Import</h2>
+      <div class="text-share-field">
+        <label>Encryption Password</label>
+        <input type="text" id="export-encrypt-key" placeholder="Enter encryption password" autocomplete="off" data-1p-ignore data-lpignore="true">
+      </div>
+      <div id="export-status" class="result-box hidden"></div>
+      <input type="file" id="import-file-input" accept=".enc" style="display:none;">
+      <div class="text-share-actions" style="flex-wrap:wrap;">
+        <button id="btn-close-export" class="btn secondary" style="flex:1">Close</button>
+      </div>
+      <div class="text-share-actions" style="margin-top:10px;">
+        <button id="btn-do-export" class="btn primary" style="flex:1;">Export</button>
+        <button id="btn-do-import" class="btn primary" style="flex:1;">Import</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Admin Settings Modal -->
+  <div id="settings-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <h2 style="margin-top:0">⚙️ Admin Settings</h2>
+      <div class="text-share-field">
+        <label>Username</label>
+        <input type="text" id="settings-username" placeholder="admin" autocomplete="off">
+      </div>
+      <div class="text-share-field">
+        <label>Password</label>
+        <input type="password" id="settings-password" placeholder="••••••" autocomplete="off">
+      </div>
+      <div class="text-share-field">
+        <label>API Key</label>
+        <div style="display:flex;gap:8px;">
+          <input type="text" id="settings-api-key" style="flex:1" autocomplete="off">
+          <button id="btn-gen-api-key" class="btn secondary" style="padding:0 12px;" title="Regenerate">🔄</button>
+        </div>
+      </div>
+      <div class="text-share-actions" style="margin-top:20px;">
+        <button id="btn-close-settings" class="btn primary" style="flex:1">Close</button>
+        <button id="btn-save-settings" class="btn primary" style="flex:1">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Gist Raw Copy Popover -->
+  <div id="gist-raw-popover" class="gist-raw-popover hidden"></div>
+
+  <!-- Custom Alert Dialog -->
+  <div id="alert-modal" class="modal-overlay hidden">
+    <div class="modal" style="max-width:380px;">
+      <h3 id="alert-title" style="margin-top:0; margin-bottom:8px;"></h3>
+      <p id="alert-message" style="color:var(--muted); margin:0 0 1.5rem;"></p>
+      <div class="text-share-actions" style="margin-top:0;">
+        <button id="alert-ok" class="btn primary" style="flex:1">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Custom Confirm Dialog -->
+  <div id="confirm-modal" class="modal-overlay hidden">
+    <div class="modal" style="max-width:380px;">
+      <h3 id="confirm-title" style="margin-top:0; margin-bottom:8px;"></h3>
+      <p id="confirm-message" style="color:var(--muted); margin:0 0 1.5rem;"></p>
+      <div class="text-share-actions" style="margin-top:0;">
+        <button id="confirm-cancel" class="btn secondary" style="flex:1">Cancel</button>
+        <button id="confirm-ok" class="btn red-btn" style="flex:1">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <script defer src="/admin/app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/admin/sw.js').catch(err => {
+          console.log('SW registration failed: ', err);
+        });
+      });
+    }
+  </script>
+</body>
+</html>

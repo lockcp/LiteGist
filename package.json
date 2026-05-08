@@ -1,0 +1,37 @@
+{
+  "name": "litegist",
+  "version": "1.0.0",
+  "description": "LiteGist - A lightweight standalone pastebin service with Gist support",
+  "main": "server.js",
+  "author": "lockcp",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lockcp/LiteGist.git"
+  },
+  "keywords": [
+    "pastebin",
+    "gist",
+    "litegist",
+    "subscription-converter",
+    "self-hosted"
+  ],
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "private": false,
+  "dependencies": {
+    "@babel/preset-env": "^7.29.5",
+    "@babel/register": "^7.29.3",
+    "babel-plugin-relative-path-import": "^2.0.1",
+    "ip-address": "^10.2.0",
+    "js-base64": "^3.7.8",
+    "json5": "^2.2.3",
+    "lodash": "^4.18.1",
+    "peggy": "^5.1.0",
+    "static-js-yaml": "^1.0.0"
+  }
+}

@@ -1,0 +1,14 @@
+services:
+  litegist:
+    image: lockcp/litegist:latest
+    container_name: litegist
+    restart: unless-stopped
+    ports:
+      - "3382:3382"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - PORT=3382
+      - ADMIN_USERNAME=admin
+      - ADMIN_PASSWORD=admin888
+      # - API_KEY=secret-key-123 # 可选，如果不设置则启动时随机生成

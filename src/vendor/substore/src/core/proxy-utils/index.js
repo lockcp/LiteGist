@@ -1,0 +1,842 @@
+import { Base64 } from 'js-base64';
+import { Buffer } from 'buffer';
+import rs from '@/utils/rs';
+import YAML from '@/utils/yaml';
+import download, { downloadFile } from '@/utils/download';
+import {
+    isIPv4,
+    isIPv6,
+    isValidPortNumber,
+    isValidUUID,
+    isNotBlank,
+    ipAddress,
+    getRandomPort,
+    numberToString,
+} from '@/utils';
+import PROXY_PROCESSORS, { ApplyProcessor } from './processors';
+import PROXY_PREPROCESSORS from './preprocessors';
+import PROXY_PRODUCERS from './producers';
+import PROXY_PARSERS from './parsers';
+import $ from '@/core/app';
+import { FILES_KEY, MODULES_KEY } from '@/constants';
+import { findByName } from '@/utils/database';
+import { produceArtifact } from '@/restful/sync';
+import { getFlag, removeFlag, getISO, MMDB } from '@/utils/geo';
+import Gist from '@/utils/gist';
+import {
+    isPresent,
+    isShadowsocksOverTls,
+    normalizeWireGuardInterface,
+} from './producers/utils';
+import { doh } from '@/utils/dns';
+import JSON5 from 'json5';
+import { hex_md5 } from '@/vendor/md5';
+import SurgeMac_Producer from './producers/surgemac';
+
+function preprocess(raw) {
+    for (const processor of PROXY_PREPROCESSORS) {
+        try {
+            if (processor.test(raw)) {
+                $.info(`Pre-processor [${processor.name}] activated`);
+                return processor.parse(raw);
+            }
+        } catch (e) {
+            $.error(`Parser [${processor.name}] failed\n Reason: ${e}`);
+        }
+    }
+    return raw;
+}
+
+function parse(raw) {
+    raw = preprocess(raw);
+    // parse
+    const lines = raw.split('\n');
+    const proxies = [];
+    let lastParser;
+
+    for (let line of lines) {
+        line = line.trim();
+        if (line.length === 0) continue; // skip empty line
+        let success = false;
+
+        // try to parse with last used parser
+        if (lastParser) {
+            const [proxy, error] = tryParse(lastParser, line);
+            if (!error) {
+                proxies.push(lastParse(proxy));
+                success = true;
+            }
+        }
+
+        if (!success) {
+            // search for a new parser
+            for (const parser of PROXY_PARSERS) {
+                const [proxy, error] = tryParse(parser, line);
+                if (!error) {
+                    proxies.push(lastParse(proxy));
+                    lastParser = parser;
+                    success = true;
+                    $.info(`${parser.name} is activated`);
+                    break;
+                }
+            }
+        }
+
+        if (!success) {
+            $.error(`Failed to parse line: ${line}`);
+        }
+    }
+    return proxies.filter((proxy) => {
+        if (['vless', 'vmess'].includes(proxy.type)) {
+            const isProxyUUIDValid = isValidUUID(proxy.uuid);
+            if (!isProxyUUIDValid) {
+                $.warn(`UUID may be invalid: ${proxy.name} ${proxy.uuid}`);
+            }
+            // return isProxyUUIDValid;
+        } else if (['hysteria2'].includes(proxy.type)) {
+            if (proxy.obfs && !proxy['obfs-password']) {
+                $.error(
+                    `Proxy ${proxy.name} has obfs ${proxy.obfs} but missing obfs-password`,
+                );
+                return false;
+            }
+        }
+        return true;
+    });
+}
+
+async function processFn(
+    proxies,
+    operators = [],
+    targetPlatform,
+    source,
+    $options,
+) {
+    let context = {};
+    for (const item of operators) {
+        if (item.disabled) {
+            $.log(
+                `Skipping disabled operator: "${
+                    item.type
+                }" with arguments:\n >>> ${
+                    JSON.stringify(item.args, null, 2) || 'None'
+                }`,
+            );
+            continue;
+        }
+        // process script
+        let script;
+        let $arguments = {};
+        if (item.type.indexOf('Script') !== -1) {
+            const { mode, content } = item.args;
+            if (mode === 'link') {
+                let url = content || '';
+                // extract link arguments
+                const rawArgs = url.split('#');
+                if (rawArgs.length > 1) {
+                    try {
+                        // 支持 `#${encodeURIComponent(JSON.stringify({arg1: "1"}))}`
+                        $arguments = JSON.parse(decodeURIComponent(rawArgs[1]));
+                    } catch (e) {
+                        for (const pair of rawArgs[1].split('&')) {
+                            const key = pair.split('=')[0];
+                            const value = pair.split('=')[1];
+                            // 部分兼容之前的逻辑 const value = pair.split('=')[1] || true;
+                            $arguments[key] =
+                                value == null || value === ''
+                                    ? true
+                                    : decodeURIComponent(value);
+                        }
+                    }
+                }
+                url = `${url.split('#')[0]}${
+                    rawArgs[2]
+                        ? `#${rawArgs[2]}`
+                        : $arguments?.noCache != null ||
+                          $arguments?.insecure != null
+                        ? `#${rawArgs[1]}`
+                        : ''
+                }`;
+                const downloadUrlMatch = url
+                    .split('#')[0]
+                    .match(/^\/api\/(file|module)\/(.+)/);
+                if (downloadUrlMatch) {
+                    let type = '';
+                    try {
+                        type = downloadUrlMatch?.[1];
+                        let name = downloadUrlMatch?.[2];
+                        if (name == null) {
+                            throw new Error(`本地 ${type} URL 无效: ${url}`);
+                        }
+                        name = decodeURIComponent(name);
+                        const key = type === 'module' ? MODULES_KEY : FILES_KEY;
+                        const item = findByName($.read(key), name);
+                        if (!item) {
+                            throw new Error(`找不到 ${type}: ${name}`);
+                        }
+
+                        if (type === 'module') {
+                            script = item.content;
+                        } else {
+                            script = await produceArtifact({
+                                type: 'file',
+                                name,
+                            });
+                        }
+                    } catch (err) {
+                        $.error(
+                            `Error when loading ${type}: ${item.args.content}.\n Reason: ${err}`,
+                        );
+                        throw new Error(`无法加载 ${type}: ${url}`);
+                    }
+                } else if (url?.startsWith('/')) {
+                    try {
+                        const fs = eval(`require("fs")`);
+                        script = fs.readFileSync(url.split('#')[0], 'utf8');
+                        // $.info(`Script loaded: >>>\n ${script}`);
+                    } catch (err) {
+                        $.error(
+                            `Error when reading local script: ${item.args.content}.\n Reason: ${err}`,
+                        );
+                        throw new Error(`无法从该路径读取脚本文件: ${url}`);
+                    }
+                } else {
+                    // if this is a remote script, download it
+                    try {
+                        script = await download(url);
+                        // $.info(`Script loaded: >>>\n ${script}`);
+                    } catch (err) {
+                        $.error(
+                            `Error when downloading remote script: ${item.args.content}.\n Reason: ${err}`,
+                        );
+                        throw new Error(`无法下载脚本: ${url}`);
+                    }
+                }
+            } else {
+                script = content;
+                $arguments = item.args.arguments || {};
+            }
+        }
+
+        if (!PROXY_PROCESSORS[item.type]) {
+            $.error(`Unknown operator: "${item.type}"`);
+            continue;
+        }
+
+        $.log(
+            `Applying "${item.type}" with arguments:\n >>> ${
+                JSON.stringify(item.args, null, 2) || 'None'
+            }`,
+        );
+        let processor;
+        if (item.type.indexOf('Script') !== -1) {
+            processor = PROXY_PROCESSORS[item.type](
+                script,
+                targetPlatform,
+                $arguments,
+                source,
+                $options,
+                context,
+            );
+        } else {
+            processor = PROXY_PROCESSORS[item.type](item.args || {});
+        }
+        proxies = await ApplyProcessor(processor, proxies);
+    }
+    return proxies;
+}
+
+function produce(proxies, targetPlatform, type, opts = {}) {
+    const producer = PROXY_PRODUCERS[targetPlatform];
+    if (!producer) {
+        throw new Error(`Target platform: ${targetPlatform} is not supported!`);
+    }
+
+    const normalizedTarget = String(targetPlatform).toLowerCase();
+    const supportedShadowsocksOverTlsTargets = new Set([
+        'qx',
+        'quantumultx',
+        'shadowrocket',
+    ]);
+
+    const sni_off_supported = /Surge|SurgeMac|Shadowrocket/i.test(
+        targetPlatform,
+    );
+
+    // filter unsupported proxies
+    proxies = proxies.filter((proxy) => {
+        // 检查代理是否支持目标平台
+        if (proxy.supported && proxy.supported[targetPlatform] === false) {
+            return false;
+        }
+
+        if (
+            isShadowsocksOverTls(proxy) &&
+            !supportedShadowsocksOverTlsTargets.has(normalizedTarget) &&
+            !opts['include-unsupported-proxy']
+        ) {
+            return false;
+        }
+
+        // 对于 vless 和 vmess 代理,需要额外验证 UUID
+        if (['vless', 'vmess'].includes(proxy.type)) {
+            const isProxyUUIDValid = isValidUUID(proxy.uuid);
+            if (!isProxyUUIDValid)
+                $.warn(`UUID may be invalid: ${proxy.name} ${proxy.uuid}`);
+            // return isProxyUUIDValid;
+            const isVlessType = proxy.type === 'vless';
+            const realityChecks = isVlessType
+                ? [
+                      ['reality-opts', proxy['reality-opts']],
+                      [
+                          'xhttp download-settings reality-opts',
+                          proxy['xhttp-opts']?.['download-settings']?.[
+                              'reality-opts'
+                          ],
+                      ],
+                  ]
+                : [];
+            for (const [realityLabel, realityOpts] of realityChecks) {
+                if (realityOpts && !isNotBlank(realityOpts['public-key'])) {
+                    // When the main proxy (上行) uses Reality with a valid
+                    // public-key, an explicit empty-string public-key in xhttp
+                    // download-settings reality-opts (下行) is intentional:
+                    // it explicitly cancels Reality inheritance for the
+                    // download stream. This is a legitimate Mihomo config.
+                    // Distinguish from reality-opts:{} (missing public-key
+                    // entirely) which represents a broken/incomplete Reality
+                    // config parsed from a malformed URI and should still be
+                    // rejected.
+                    if (
+                        realityLabel ===
+                            'xhttp download-settings reality-opts' &&
+                        isNotBlank(proxy['reality-opts']?.['public-key']) &&
+                        realityOpts['public-key'] === ''
+                    ) {
+                        continue;
+                    }
+                    // Intentional: a VLESS Reality node without public-key is
+                    // not a valid Mihomo export or regenerated share link. We
+                    // keep the marker while parsing so callers can inspect the
+                    // broken config, then stop export here instead of silently
+                    // emitting invalid Reality output.
+                    $.error(
+                        `Skipping VLESS Reality proxy ${proxy.name}: empty ${realityLabel}.public-key`,
+                    );
+                    return false;
+                }
+            }
+
+            const xhttpOpts = proxy['xhttp-opts'];
+            if (
+                isVlessType &&
+                proxy.network === 'xhttp' &&
+                xhttpOpts?.mode === 'stream-one' &&
+                xhttpOpts['download-settings']
+            ) {
+                // Match Mihomo's outbound validation: xhttp download-settings
+                // require split transports, so stream-one is rejected instead
+                // of emitting a config/share link that Mihomo will not accept.
+                $.error(
+                    `Skipping VLESS xhttp proxy ${proxy.name}: mode "stream-one" cannot be used with download-settings`,
+                );
+                return false;
+            }
+        }
+
+        return true;
+    });
+
+    proxies = proxies.map((proxy) => {
+        proxy._resolved = proxy.resolved;
+
+        if (!isNotBlank(proxy.name)) {
+            proxy.name = `${proxy.type} ${proxy.server}:${proxy.port}`;
+        }
+        if (proxy['disable-sni']) {
+            if (sni_off_supported) {
+                proxy.sni = 'off';
+            } else if (!['tuic'].includes(proxy.type)) {
+                $.error(
+                    `Target platform ${targetPlatform} does not support sni off. Proxy's fields (sni, tls-fingerprint and skip-cert-verify) will be modified.`,
+                );
+                proxy.sni = '';
+                proxy['skip-cert-verify'] = true;
+                delete proxy['tls-fingerprint'];
+            }
+        }
+
+        // 处理 端口跳跃
+        if (proxy.ports) {
+            proxy.ports = String(proxy.ports);
+            if (!['ClashMeta'].includes(targetPlatform)) {
+                proxy.ports = proxy.ports.replace(/\//g, ',');
+            }
+            if (!proxy.port) {
+                proxy.port = getRandomPort(proxy.ports);
+            }
+        }
+        if (proxy.type === 'wireguard') {
+            normalizeWireGuardInterface(proxy);
+        }
+
+        return proxy;
+    });
+
+    $.log(`Producing proxies for target: ${targetPlatform}`);
+    if (typeof producer.type === 'undefined' || producer.type === 'SINGLE') {
+        let list = proxies
+            .map((proxy) => {
+                try {
+                    return producer.produce(proxy, type, opts);
+                } catch (err) {
+                    $.error(
+                        `Cannot produce proxy: ${proxy.name}\nReason: ${err}`,
+                    );
+                    return '';
+                }
+            })
+            .filter((line) => line.length > 0);
+        if (opts._merged && opts.localPort >= 1) {
+            list.push(
+                SurgeMac_Producer().produce(
+                    {
+                        name: opts._merged.name,
+                        type: 'external',
+                        udp: true,
+                        exec: opts._merged.exec,
+                        'local-port': opts.localPort,
+                        args: [
+                            '-config',
+                            Base64.encode(
+                                JSON.stringify({
+                                    ...opts._merged.config,
+                                    'mixed-port': opts.localPort,
+                                }),
+                            ),
+                        ],
+                        addresses: [],
+                    },
+                    type,
+                    opts,
+                ),
+            );
+        }
+        list = type === 'internal' ? list : list.join('\n');
+        if (
+            targetPlatform.startsWith('Surge') &&
+            proxies.length > 0 &&
+            proxies.every((p) => p.type === 'wireguard')
+        ) {
+            list = `#!name=${proxies[0]?._subName}
+#!desc=${proxies[0]?._desc ?? ''}
+#!category=${proxies[0]?._category ?? ''}
+${list}`;
+        }
+        return list;
+    } else if (producer.type === 'ALL') {
+        return producer.produce(proxies, type, opts);
+    }
+}
+
+export const ProxyUtils = {
+    parse,
+    process: processFn,
+    produce,
+    ipAddress,
+    getRandomPort,
+    isIPv4,
+    isIPv6,
+    isIP,
+    yaml: YAML,
+    getFlag,
+    removeFlag,
+    getISO,
+    MMDB,
+    Gist,
+    download,
+    downloadFile,
+    isValidUUID,
+    doh,
+    Buffer,
+    Base64,
+    JSON5,
+    hex_md5,
+};
+
+function tryParse(parser, line) {
+    if (!safeMatch(parser, line)) return [null, new Error('Parser mismatch')];
+    try {
+        const proxy = parser.parse(line);
+        return [proxy, null];
+    } catch (err) {
+        return [null, err];
+    }
+}
+
+function safeMatch(parser, line) {
+    try {
+        return parser.test(line);
+    } catch (err) {
+        return false;
+    }
+}
+
+function formatTransportPath(path) {
+    if (typeof path === 'string' || typeof path === 'number') {
+        path = String(path).trim();
+
+        if (path === '') {
+            return '/';
+        } else if (!path.startsWith('/')) {
+            return '/' + path;
+        }
+    }
+    return path;
+}
+
+function lastParse(proxy) {
+    if (typeof proxy.cipher === 'string') {
+        proxy.cipher = proxy.cipher.toLowerCase();
+    }
+    if (typeof proxy.password === 'number') {
+        proxy.password = numberToString(proxy.password);
+    }
+    if (proxy['hop-interval'] != null) {
+        const hopInterval = `${proxy['hop-interval']}`.trim();
+        const hopIntervalRangeMatch = hopInterval.match(/^(\d+)\s*-\s*(\d+)$/);
+
+        if (hopIntervalRangeMatch) {
+            const hopIntervalMin = parseInt(hopIntervalRangeMatch[1], 10);
+            const hopIntervalMax = parseInt(hopIntervalRangeMatch[2], 10);
+
+            if (hopIntervalMin > 0 && hopIntervalMin <= hopIntervalMax) {
+                // 暂时只在统一收口阶段拆分 mihomo 的 hop-interval 区间写法，
+                // 不对其他客户端做进一步转换，等 mihomo / sing-box 新版覆盖率上来后再统一处理。
+                proxy['hop-interval'] = hopIntervalMin;
+                proxy['hop-interval-max'] = hopIntervalMax;
+            } else {
+                delete proxy['hop-interval'];
+                delete proxy['hop-interval-max'];
+            }
+        } else if (/^\d+$/.test(hopInterval)) {
+            const parsedHopInterval = parseInt(hopInterval, 10);
+
+            if (parsedHopInterval > 0) {
+                proxy['hop-interval'] = parsedHopInterval;
+                delete proxy['hop-interval-max'];
+            } else {
+                delete proxy['hop-interval'];
+                delete proxy['hop-interval-max'];
+            }
+        } else {
+            delete proxy['hop-interval'];
+            delete proxy['hop-interval-max'];
+        }
+    }
+    if (
+        ['ss'].includes(proxy.type) &&
+        proxy.cipher === 'none' &&
+        !proxy.password
+    ) {
+        // https://github.com/MetaCubeX/mihomo/issues/1677
+        proxy.password = '';
+    }
+    if (proxy.interface) {
+        proxy['interface-name'] = proxy.interface;
+        delete proxy.interface;
+    }
+    if (isValidPortNumber(proxy.port)) {
+        proxy.port = parseInt(proxy.port, 10);
+    }
+    if (proxy.server) {
+        proxy.server = `${proxy.server}`
+            .trim()
+            .replace(/^\[/, '')
+            .replace(/\]$/, '');
+    }
+    if (proxy.network === 'ws') {
+        if (!proxy['ws-opts'] && (proxy['ws-path'] || proxy['ws-headers'])) {
+            proxy['ws-opts'] = {};
+            if (proxy['ws-path']) {
+                proxy['ws-opts'].path = proxy['ws-path'];
+            }
+            if (proxy['ws-headers']) {
+                proxy['ws-opts'].headers = proxy['ws-headers'];
+            }
+        }
+        delete proxy['ws-path'];
+        delete proxy['ws-headers'];
+    }
+
+    const transportPath = proxy[`${proxy.network}-opts`]?.path;
+
+    if (Array.isArray(transportPath)) {
+        proxy[`${proxy.network}-opts`].path = transportPath.map((item) =>
+            formatTransportPath(item),
+        );
+    } else if (transportPath != null) {
+        proxy[`${proxy.network}-opts`].path =
+            formatTransportPath(transportPath);
+    }
+
+    // network 逻辑有点乱了 可能还牵扯到别的逻辑 以后再优化...
+    // 以 mihomo 为准的话, 其实应该是
+    // network¶
+    // 传输层，支持 ws/grpc，不配置或配置其他值则为 tcp
+    if (proxy.type === 'trojan') {
+        proxy.network = proxy.network || 'tcp';
+    }
+    // network¶
+    // 传输层，支持 ws/http/h2/grpc，不配置或配置其他值则为 tcp
+    if (['vmess'].includes(proxy.type)) {
+        proxy.network = proxy.network || 'tcp';
+
+        proxy.cipher = proxy.cipher || 'none';
+        proxy.alterId = proxy.alterId || 0;
+    }
+    // network¶
+    // 传输层，支持 ws/http/h2/grpc，不配置或配置其他值则为 tcp
+    if (['vless'].includes(proxy.type)) {
+        proxy.network = proxy.network || 'tcp';
+    }
+    if (
+        [
+            'trojan',
+            'tuic',
+            'hysteria',
+            'hysteria2',
+            'juicity',
+            'anytls',
+            'trusttunnel',
+            'naive',
+        ].includes(proxy.type)
+    ) {
+        proxy.tls = true;
+    }
+    if (proxy.network) {
+        let transportHost = proxy[`${proxy.network}-opts`]?.headers?.Host;
+        let transporthost = proxy[`${proxy.network}-opts`]?.headers?.host;
+        if (proxy.network === 'h2') {
+            if (!transporthost && transportHost) {
+                proxy[`${proxy.network}-opts`].headers.host = transportHost;
+                delete proxy[`${proxy.network}-opts`].headers.Host;
+            }
+        } else if (transporthost && !transportHost) {
+            proxy[`${proxy.network}-opts`].headers.Host = transporthost;
+            delete proxy[`${proxy.network}-opts`].headers.host;
+        }
+    }
+    if (proxy.network === 'h2') {
+        const host = proxy['h2-opts']?.headers?.host;
+        const path = proxy['h2-opts']?.path;
+        if (host && !Array.isArray(host)) {
+            proxy['h2-opts'].headers.host = [host];
+        }
+        if (Array.isArray(path)) {
+            proxy['h2-opts'].path = path[0];
+        }
+    }
+
+    // 非 tls, 有 ws/http 传输层, 使用域名的节点, 将设置传输层 Host 防止之后域名解析后丢失域名(不覆盖现有的 Host)
+    if (
+        !proxy.tls &&
+        ['ws', 'http'].includes(proxy.network) &&
+        !proxy[`${proxy.network}-opts`]?.headers?.Host &&
+        !isIP(proxy.server)
+    ) {
+        proxy[`${proxy.network}-opts`] = proxy[`${proxy.network}-opts`] || {};
+        proxy[`${proxy.network}-opts`].headers =
+            proxy[`${proxy.network}-opts`].headers || {};
+        proxy[`${proxy.network}-opts`].headers.Host =
+            ['vmess', 'vless'].includes(proxy.type) && proxy.network === 'http'
+                ? [proxy.server]
+                : proxy.server;
+    }
+    // 统一将 VMess 和 VLESS 的 http 传输层的 path 和 Host 处理为数组
+    if (['vmess', 'vless'].includes(proxy.type) && proxy.network === 'http') {
+        let transportPath = proxy[`${proxy.network}-opts`]?.path;
+        let transportHost = proxy[`${proxy.network}-opts`]?.headers?.Host;
+        if (transportHost && !Array.isArray(transportHost)) {
+            proxy[`${proxy.network}-opts`].headers.Host = [transportHost];
+        }
+        if (transportPath && !Array.isArray(transportPath)) {
+            proxy[`${proxy.network}-opts`].path = [transportPath];
+        }
+    }
+    // 允许设置 sni 为空字符串且为防止影响其他逻辑, 这里先改成这样判断
+    // 本质上是为了防止本来应该使用 server 作为 sni 的情况下, 若之后进行了域名解析, 导致 server 变成 ip 丢失了 sni
+    // 为了兼容性, 暂时先这么改
+    if (proxy.tls && !proxy.sni && proxy.sni !== '') {
+        // 传输层若有设置就使用
+        if (proxy.network) {
+            let transportHost = proxy[`${proxy.network}-opts`]?.headers?.Host;
+            transportHost = Array.isArray(transportHost)
+                ? transportHost[0]
+                : transportHost;
+            if (transportHost) {
+                proxy.sni = transportHost;
+            }
+        }
+        // 不区分是不是域名, 总之如果到这里还没 sni, 可以设置域名 server 为 sni
+        if (!proxy.sni && !isIP(proxy.server)) {
+            proxy.sni = proxy.server;
+        }
+    }
+    // if (['hysteria', 'hysteria2', 'tuic'].includes(proxy.type)) {
+    if (proxy.ports) {
+        proxy.ports = String(proxy.ports).replace(/\//g, ',');
+    } else {
+        delete proxy.ports;
+    }
+    // }
+    if (
+        ['hysteria2'].includes(proxy.type) &&
+        proxy.obfs &&
+        !['salamander'].includes(proxy.obfs) &&
+        !proxy['obfs-password']
+    ) {
+        proxy['obfs-password'] = proxy.obfs;
+        proxy.obfs = 'salamander';
+    }
+    if (
+        ['hysteria2'].includes(proxy.type) &&
+        !proxy['obfs-password'] &&
+        proxy['obfs_password']
+    ) {
+        proxy['obfs-password'] = proxy['obfs_password'];
+        delete proxy['obfs_password'];
+    }
+    if (['vless'].includes(proxy.type)) {
+        // 删除 reality-opts: {}
+        if (
+            proxy['reality-opts'] &&
+            Object.keys(proxy['reality-opts']).length === 0
+        ) {
+            delete proxy['reality-opts'];
+        }
+        // 删除 grpc-opts: {}
+        if (
+            proxy['grpc-opts'] &&
+            Object.keys(proxy['grpc-opts']).length === 0
+        ) {
+            delete proxy['grpc-opts'];
+        }
+        // 非 reality, 空 flow 没有意义
+        if (
+            (!proxy['reality-opts'] && !proxy.flow) ||
+            ['null', null].includes(proxy.flow)
+        ) {
+            delete proxy.flow;
+        }
+        if (['http'].includes(proxy.network)) {
+            let transportPath = proxy[`${proxy.network}-opts`]?.path;
+            if (!transportPath) {
+                if (!proxy[`${proxy.network}-opts`]) {
+                    proxy[`${proxy.network}-opts`] = {};
+                }
+                proxy[`${proxy.network}-opts`].path = ['/'];
+            }
+        }
+    }
+
+    if (typeof proxy.name !== 'string') {
+        if (/^\d+$/.test(proxy.name)) {
+            proxy.name = `${proxy.name}`;
+        } else {
+            try {
+                if (proxy.name?.data) {
+                    proxy.name = Buffer.from(proxy.name.data).toString('utf8');
+                } else {
+                    proxy.name = Buffer.from(proxy.name).toString('utf8');
+                }
+            } catch (e) {
+                $.error(`proxy.name decode failed\nReason: ${e}`);
+                proxy.name = `${proxy.type} ${proxy.server}:${proxy.port}`;
+            }
+        }
+    }
+    if (['ws', 'http', 'h2'].includes(proxy.network)) {
+        if (
+            ['ws', 'h2'].includes(proxy.network) &&
+            !proxy[`${proxy.network}-opts`]?.path
+        ) {
+            proxy[`${proxy.network}-opts`] =
+                proxy[`${proxy.network}-opts`] || {};
+            proxy[`${proxy.network}-opts`].path = '/';
+        } else if (
+            proxy.network === 'http' &&
+            (!Array.isArray(proxy[`${proxy.network}-opts`]?.path) ||
+                proxy[`${proxy.network}-opts`]?.path.every((i) => !i))
+        ) {
+            proxy[`${proxy.network}-opts`] =
+                proxy[`${proxy.network}-opts`] || {};
+            proxy[`${proxy.network}-opts`].path = ['/'];
+        }
+    }
+    if (['', 'off'].includes(proxy.sni)) {
+        proxy['disable-sni'] = true;
+    }
+    let caStr = proxy['ca_str'];
+    if (proxy['ca-str']) {
+        caStr = proxy['ca-str'];
+    } else if (caStr) {
+        delete proxy['ca_str'];
+        proxy['ca-str'] = caStr;
+    }
+    try {
+        if ($.env.isNode && !caStr && proxy['_ca']) {
+            caStr = $.node.fs.readFileSync(proxy['_ca'], {
+                encoding: 'utf8',
+            });
+        }
+    } catch (e) {
+        $.error(`Read ca file failed\nReason: ${e}`);
+    }
+    if (!proxy['tls-fingerprint'] && caStr) {
+        proxy['tls-fingerprint'] = rs.generateFingerprint(caStr);
+    }
+    if (
+        ['ss'].includes(proxy.type) &&
+        isPresent(proxy, 'shadow-tls-password')
+    ) {
+        proxy.plugin = 'shadow-tls';
+        proxy['plugin-opts'] = {
+            host: proxy['shadow-tls-sni'],
+            password: proxy['shadow-tls-password'],
+            version: proxy['shadow-tls-version'],
+        };
+        delete proxy['shadow-tls-sni'];
+        delete proxy['shadow-tls-password'];
+        delete proxy['shadow-tls-version'];
+    }
+    if (['tuic'].includes(proxy.type)) {
+        proxy.alpn = Array.isArray(proxy.alpn)
+            ? proxy.alpn
+            : [proxy.alpn || 'h3'];
+        proxy['congestion-controller'] =
+            proxy['congestion-controller'] || 'cubic';
+        proxy['udp-relay-mode'] = proxy['udp-relay-mode'] || 'native';
+    }
+    if (['wireguard'].includes(proxy.type)) {
+        if (Array.isArray(proxy.peers) && proxy.peers.length > 0) {
+            const validPeer =
+                proxy.peers.find((peer) => peer.ip && peer.ipv6) ||
+                proxy.peers.find((peer) => peer.ip || peer.ipv6);
+            if (validPeer) {
+                if (!proxy.ip) {
+                    proxy.ip = proxy.peers[0]?.ip;
+                }
+                if (!proxy.ipv6) {
+                    proxy.ipv6 = proxy.peers[0]?.ipv6;
+                }
+            }
+        }
+        normalizeWireGuardInterface(proxy);
+    }
+    return proxy;
+}
+
+function isIP(ip) {
+    return isIPv4(ip) || isIPv6(ip);
+}
