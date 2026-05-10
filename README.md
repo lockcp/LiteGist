@@ -109,5 +109,5 @@ This project is licensed under the **[GNU Affero General Public License v3.0](ht
 ---
 
 ## Related Projects
-[EdgeGist](https://github.com/xream/EdgeGist)
+- [EdgeGist](https://github.com/xream/EdgeGist)
 > Minimal GitHub Gist-compatible API service running on Cloudflare's edge network, backed by D1 and packaged for Cloudflare Pages.
