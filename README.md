@@ -105,3 +105,9 @@ This project is licensed under the **[GNU Affero General Public License v3.0](ht
 - **Network Public Requirement**: If you provide access to this project or a modified version over a network, you must make the source code available to all users.
 - **Copyleft**: Any derivative works must also be licensed under AGPL-3.0.
 - **Attribution**: You must provide credit to the original author.
+
+---
+
+## Related Projects
+[EdgeGist](https://github.com/xream/EdgeGist)
+> Minimal GitHub Gist-compatible API service running on Cloudflare's edge network, backed by D1 and packaged for Cloudflare Pages.
