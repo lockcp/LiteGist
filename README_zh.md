@@ -105,3 +105,10 @@ LiteGist 提供了强大的 API 接口，方便与 **Sub-Store** 等工具集成
 - **网络公开义务**：如果您通过网络（如网页、API）提供本项目或其修改版的访问服务，您必须向所有用户公开您的源代码。
 - **开源传承**：任何基于本项目修改或衍生出的代码，如果对外提供服务，也必须使用 AGPL-3.0 协议开源。
 - **署名**：必须保留原作者的署名信息。
+
+---
+
+## 相关项目
+- [EdgeGist](https://github.com/xream/EdgeGist)
+
+  > EdgeGist 是一个运行在 Cloudflare edge network 上的 GitHub Gist API 兼容服务，使用 D1 存储，并打包为 Cloudflare Pages 项目。
