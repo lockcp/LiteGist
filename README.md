@@ -1,5 +1,12 @@
 # LiteGist
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="public/admin/icon-512.png">
+    <img src="public/icons/edgegist-192.png" alt="EdgeGist app icon" width="96" height="96">
+  </picture>
+</p>
+
 ![Language](https://img.shields.io/badge/Language-Node.js-007aff?style=flat-square)
 ![Docker](https://img.shields.io/badge/Docker-Ready-2496ed?style=flat-square)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-orange.svg?style=flat-square)](https://www.gnu.org/licenses/agpl-3.0.html)
