@@ -2,8 +2,8 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="public/admin/icon-512.png">
-    <img src="public/icons/edgegist-192.png" alt="EdgeGist app icon" width="96" height="96">
+    <source media="(prefers-color-scheme: dark)" srcset="admin/icon-192.png">
+    <img src="admin/icon-192.png" alt="LiteGist app icon" width="96" height="96">
   </picture>
 </p>
 
