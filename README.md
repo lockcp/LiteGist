@@ -1,15 +1,20 @@
 # LiteGist
 
-<p align="center">
+<div align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="admin/icon-192.png">
     <img src="admin/icon-192.png" alt="LiteGist app icon" width="96" height="96">
   </picture>
-</p>
 
-![Language](https://img.shields.io/badge/Language-Node.js-007aff?style=flat-square)
-![Docker](https://img.shields.io/badge/Docker-Ready-2496ed?style=flat-square)
-[![License](https://img.shields.io/badge/License-AGPL--3.0-orange.svg?style=flat-square)](https://www.gnu.org/licenses/agpl-3.0.html)
+  <br>
+  <br>
+
+  <img src="https://img.shields.io/badge/Language-Node.js-007aff?style=flat-square" alt="Language">
+  <img src="https://img.shields.io/badge/Docker-Ready-2496ed?style=flat-square" alt="Docker">
+  <a href="https://www.gnu.org/licenses/agpl-3.0.html">
+    <img src="https://img.shields.io/badge/License-AGPL--3.0-orange.svg?style=flat-square" alt="License">
+  </a>
+</div>
 
 LiteGist is an extremely lightweight, experience-focused personal standalone pastebin service. Designed with a full-screen editor philosophy, it supports Markdown rendering, code highlighting, password protection, Gist-compatible multi-file management, and PWA support. It aims to provide you with a high-performance "Private Gist" sharing experience.
 
