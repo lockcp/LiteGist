@@ -16,6 +16,7 @@
   </a>
 </div>
 
+
 LiteGist is an extremely lightweight, experience-focused personal standalone pastebin service. Designed with a full-screen editor philosophy, it supports Markdown rendering, code highlighting, password protection, Gist-compatible multi-file management, and PWA support. It aims to provide you with a high-performance "Private Gist" sharing experience.
 
 [中文文档 (Chinese)](./README_zh.md)
